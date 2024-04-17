@@ -1,0 +1,18 @@
+{% extends 'base.html' %} {% block content %}
+<form method="POST">
+  <div class="mb-3">
+    <input
+      type="text"
+      class="form-control"
+      id="query"
+      name="query"
+      placeholder="Ingrese su consulta de búsqueda"
+      value="{{query}}"
+    />
+  </div>
+  {% if result %}
+  <p>{{result}}</p>
+  {% endif %}
+</form>
+
+{% endblock %}
