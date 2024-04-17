@@ -63,7 +63,7 @@ class RagElastic:
         # self.es_client = Elasticsearch('http://localhost:9200')
         embedding = OpenAIEmbeddings()
         self.elastic_vector_search = ElasticsearchStore(
-            index_name="test_index",
+            index_name=self.ELASTIC_INDEX,
             es_connection=self.es_client,
             embedding=embedding,
         )
@@ -88,9 +88,10 @@ class RagElastic:
         text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=100)
         docs = text_splitter.split_documents(documents)
         embeddings = OpenAIEmbeddings()
-        self.elastic_vector_search.from_documents(
+        ElasticsearchStore.from_documents(
             docs,
             embeddings,
+            es_connection=self.es_client,
             index_name=self.ELASTIC_INDEX,
         )
 
