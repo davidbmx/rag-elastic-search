@@ -1,14 +1,21 @@
 import os
-from langchain_elasticsearch import ElasticsearchStore
+from langchain_elasticsearch import ElasticsearchStore, ElasticsearchChatMessageHistory
 from langchain_openai import OpenAIEmbeddings
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import CharacterTextSplitter
+# from langchain_text_splitters import CharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.schema.runnable import RunnablePassthrough
 from langchain_openai import ChatOpenAI
 from langchain.schema.output_parser import StrOutputParser
 from langchain.prompts import ChatPromptTemplate
 from elasticsearch import Elasticsearch
 from dotenv import load_dotenv
+
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import JSONLoader
+from langchain_community.document_loaders import Docx2txtLoader
+from langchain_community.document_loaders import UnstructuredExcelLoader
+from langchain_community.document_loaders import UnstructuredPowerPointLoader
+from langchain_community.document_loaders.csv_loader import CSVLoader
 
 load_dotenv()
 
@@ -48,11 +55,8 @@ load_dotenv()
 
 class RagElastic:
     ELASTIC_INDEX = 'rag-documents'
-    template_prompt = """Answer the question based only on the following context:
-    {context}
-
-    Question: {question}
-    """
+    ELASTIC_HISTORY_INDEX = 'rag-history'
+    #template_prompt = """Responde la pregunta basándote solo en el siguiente contexto:
 
     def __init__(self):
         self.es_client = Elasticsearch(
@@ -68,8 +72,47 @@ class RagElastic:
             embedding=embedding,
         )
 
+        self.template_prompt = """Answer the question based only on the following context:
+        {context}
+
+        Question: {question}
+        """
+
+        self.propmt_history = """
+        Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question, in its original language.
+
+        Chat history:
+        {context}
+        Follow Up Question: {question}
+        Standalone question:
+        """
+
+    def get_chat_history(self, session_id):
+        return ElasticsearchChatMessageHistory(
+            es_connection=self.es_client, index=self.ELASTIC_HISTORY_INDEX, session_id=session_id
+    )
+
+    def get_chat_context(self, question, chat_history):
+        messages = ""
+        for message in chat_history.messages:
+            if message.type == 'human':
+                messages += f"Question: {message.content}\n"
+            elif message.type == 'ai':
+                messages += f"Response: {message.content}\n"
+        return messages
+    
+    def get_condensed_question(self, question, chat_history):
+        context = self.get_chat_context(question, chat_history)
+        prompt = self.propmt_history.replace("{context}", context)
+        prompt = prompt.replace("{question}", question)
+        chain = ChatOpenAI()
+
+        print(prompt)
+
+        return chain.invoke(prompt).content
+
     def make_search(self, query):
-        self.elastic_vector_search.similarity_search(query)
+        # self.elastic_vector_search.similarity_search(query)
         retriever = self.elastic_vector_search.as_retriever(search_kwargs={"k": 4})
         prompt = ChatPromptTemplate.from_template(self.template_prompt)
 
@@ -81,17 +124,83 @@ class RagElastic:
         )
         
         return chain.invoke(query)
+    
+    def search_question(self, question, session_id):
+        chat_history = self.get_chat_history(session_id)
 
-    def upload_file(self, file):
-        loader = PyPDFLoader(file)
-        documents = loader.load()
-        text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=100)
-        docs = text_splitter.split_documents(documents)
-        embeddings = OpenAIEmbeddings()
-        ElasticsearchStore.from_documents(
-            docs,
-            embeddings,
-            es_connection=self.es_client,
-            index_name=self.ELASTIC_INDEX,
+        if len(chat_history.messages):
+            condensed_question = self.get_condensed_question(question, chat_history)
+            print(condensed_question)
+        else:
+            condensed_question = question
+        
+        retriever = self.elastic_vector_search.as_retriever(search_kwargs={"k": 4})
+        prompt = ChatPromptTemplate.from_template(self.template_prompt)
+
+        chain = (
+            {"context": retriever, "question": RunnablePassthrough()} 
+            | prompt 
+            | ChatOpenAI() 
         )
 
+        response = chain.invoke(condensed_question)
+        chat_history.add_user_message(question)
+        chat_history.add_ai_message(response)
+        return response.content
+
+    def save_documents(self, documents):
+        # text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=100)
+        # docs = text_splitter.split_documents(documents)
+
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=512,
+            chunk_overlap=20,
+            length_function=len,
+            keep_separator=True,
+            separators=[
+                "\n \n",
+                "\n\n",
+                "\n",
+                ".",
+                "!",
+                "?",
+                " ",
+                ",",
+                "\u200b",  # Zero-width space
+                "\uff0c",  # Fullwidth comma
+                "\u3001",  # Ideographic comma
+                "\uff0e",  # Fullwidth full stop
+                "\u3002",  # Ideographic full stop
+                "",
+            ],
+        )
+
+        docs = text_splitter.split_documents(documents)
+        self.elastic_vector_search.add_documents(docs)
+
+    def addDocument(self, filename):
+        if filename.lower().endswith('pdf'):
+            docs = PyPDFLoader(filename).load()
+        if filename.lower().endswith('json'):
+            docs = JSONLoader(
+                file_path = filename,
+                jq_schema = os.getenv("json_schema"),
+                text_content = os.getenv("json_text_content") == "True",
+            ).load()
+        if filename.lower().endswith('csv'):
+            docs = CSVLoader(filename).load()
+        if filename.lower().endswith('docx'):
+            docs = Docx2txtLoader(filename).load()
+        if filename.lower().endswith('xlsx'):
+            docs = UnstructuredExcelLoader(filename).load()
+        if filename.lower().endswith('pptx'):
+            docs = UnstructuredPowerPointLoader(filename).load()
+
+        return self.save_documents(docs)
+    
+    def re_index(self, session_id = None):
+        self.es_client.indices.delete(index=self.ELASTIC_INDEX)
+
+        if session_id:
+            self.get_chat_history(session_id).clear()
+        
