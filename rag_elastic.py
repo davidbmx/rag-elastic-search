@@ -70,9 +70,14 @@ class RagElastic:
             index_name=self.ELASTIC_INDEX,
             es_connection=self.es_client,
             embedding=embedding,
+            strategy=ElasticsearchStore.ApproxRetrievalStrategy(hybrid=True),
         )
 
-        self.template_prompt = """Answer the question based only on the following context:
+        # self.template_prompt = """Answer the question based only on the following context:
+
+        self.template_prompt = """Answer the question based on the following context:
+
+        Context:
         {context}
 
         Question: {question}
@@ -83,7 +88,8 @@ class RagElastic:
 
         Chat history:
         {context}
-        Follow Up Question: {question}
+
+        Follow Up Question: {{ question }}
         Standalone question:
         """
 
@@ -135,6 +141,8 @@ class RagElastic:
             condensed_question = question
         
         retriever = self.elastic_vector_search.as_retriever(search_kwargs={"k": 4})
+        print(retriever.invoke(condensed_question))
+        # retriever = self.elastic_vector_search.similarity_search(condensed_question, k=10)
         prompt = ChatPromptTemplate.from_template(self.template_prompt)
 
         chain = (
@@ -204,3 +212,5 @@ class RagElastic:
         if session_id:
             self.get_chat_history(session_id).clear()
         
+# perplexity
+# add pipes from langchain to internet if not have context
