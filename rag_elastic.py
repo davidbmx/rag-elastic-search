@@ -75,22 +75,27 @@ class RagElastic:
 
         # self.template_prompt = """Answer the question based only on the following context:
 
-        self.template_prompt = """Answer the question based on the following context:
+        self.template_prompt = """Simulando un asistente de chat, responde la pregunta basándote solo en el siguiente contexto y si existe historial tambien basasete en eso
+        si la preguinta no es referente al historial o contexto puedes responder que no tienes informacion al respecto:
 
-        Context:
+        Contexto:
         {context}
 
-        Question: {question}
+        Historial:
+        *history*
+
+        Usuario: {question}
+        Asistente:
         """
 
         self.propmt_history = """
-        Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question, in its original language.
+        Basandote en el siguiente contexto, me puedes retornar una respuesta coherente a la pregunta basandote en la pregunta del usuario:
 
-        Chat history:
+        Contexto:
         {context}
 
-        Follow Up Question: {{ question }}
-        Standalone question:
+        Usuario: {question}
+        Asistente:
         """
 
     def get_chat_history(self, session_id):
@@ -133,17 +138,14 @@ class RagElastic:
     
     def search_question(self, question, session_id):
         chat_history = self.get_chat_history(session_id)
-
+        history_context = ''
         if len(chat_history.messages):
-            condensed_question = self.get_condensed_question(question, chat_history)
-            print(condensed_question)
-        else:
-            condensed_question = question
+            history_context = self.get_condensed_question(question, chat_history)
+            print(history_context)
         
         retriever = self.elastic_vector_search.as_retriever(search_kwargs={"k": 4})
-        print(retriever.invoke(condensed_question))
         # retriever = self.elastic_vector_search.similarity_search(condensed_question, k=10)
-        prompt = ChatPromptTemplate.from_template(self.template_prompt)
+        prompt = ChatPromptTemplate.from_template(self.template_prompt.replace("*history*", history_context))
 
         chain = (
             {"context": retriever, "question": RunnablePassthrough()} 
@@ -151,7 +153,7 @@ class RagElastic:
             | ChatOpenAI() 
         )
 
-        response = chain.invoke(condensed_question)
+        response = chain.invoke(question)
         chat_history.add_user_message(question)
         chat_history.add_ai_message(response)
         return response.content
